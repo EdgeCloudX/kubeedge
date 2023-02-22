@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kubeedge/kubeedge/cloud/pkg/metrics"
 	"math/rand"
 	"time"
 
@@ -138,6 +139,7 @@ func registerModules(c *v1alpha1.CloudCoreConfig) {
 	cloudstream.Register(c.Modules.CloudStream, c.CommonConfig)
 	router.Register(c.Modules.Router)
 	dynamiccontroller.Register(c.Modules.DynamicController)
+	metrics.Register(c.Modules.Metrics)
 }
 
 func NegotiateTunnelPort() (*int, error) {

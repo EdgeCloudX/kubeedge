@@ -5,33 +5,39 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	crdClientset "github.com/kubeedge/kubeedge/cloud/pkg/client/clientset/versioned"
+	"github.com/kubeedge/kubeedge/cloud/pkg/common/client"
+	"github.com/kubeedge/kubeedge/cloud/pkg/common/modules"
+	"github.com/kubeedge/kubeedge/pkg/metaserver/util"
+	"math"
+	"net"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
 	beehiveModel "github.com/kubeedge/beehive/pkg/core/model"
 	"github.com/kubeedge/kubeedge/cloud/pkg/apis/reliablesyncs/v1alpha1"
-	crdClientset "github.com/kubeedge/kubeedge/cloud/pkg/client/clientset/versioned"
 	"github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/channelq"
 	hubio "github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/common/io"
 	"github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/common/model"
 	hubconfig "github.com/kubeedge/kubeedge/cloud/pkg/cloudhub/config"
-	"github.com/kubeedge/kubeedge/cloud/pkg/common/client"
-	"github.com/kubeedge/kubeedge/cloud/pkg/common/modules"
 	deviceconst "github.com/kubeedge/kubeedge/cloud/pkg/devicecontroller/constants"
 	edgeconst "github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/constants"
 	edgemessagelayer "github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/messagelayer"
+	"github.com/kubeedge/kubeedge/cloud/pkg/edgecontroller/utils"
 	"github.com/kubeedge/kubeedge/cloud/pkg/synccontroller"
 	"github.com/kubeedge/kubeedge/common/constants"
-	"github.com/kubeedge/kubeedge/pkg/metaserver/util"
 	"github.com/kubeedge/viaduct/pkg/conn"
 	"github.com/kubeedge/viaduct/pkg/mux"
 )
@@ -155,6 +161,255 @@ func (mh *MessageHandle) HandleServer(container *mux.MessageContainer, writer mu
 			// if err, we should stop node, write data to edgehub, stop nodify
 			klog.Errorf("Failed to serve handle with error: %s", err.Error())
 		}
+	}
+}
+
+var (
+	kubeClient *kubernetes.Clientset
+)
+
+type ConnStat struct {
+	PeerName        string
+	ConnCount       int
+	UpdateTs        int64
+	UnbalancedTimes int
+}
+
+func (mh *MessageHandle) getPeerStat(peers string) (map[string]ConnStat, error) {
+	var unbalancedTimes int
+	peersStat := make(map[string]ConnStat)
+
+	peerAddrs := strings.Split(peers, ",")
+	for _, peerName := range peerAddrs {
+		connCm, err := kubeClient.CoreV1().ConfigMaps("kubeedge").Get(context.TODO(), peerName, metav1.GetOptions{})
+		if err != nil && apierrors.IsNotFound(err) {
+			klog.Infof("conn-balancing get not found peer %s.", peerName)
+			continue
+		}
+		updateTsStr, ok := connCm.Data["updateTime"]
+		if !ok {
+			klog.Infof("conn-balancing get not found peer %s updateTime.", peerName)
+			continue
+		}
+		connCountStr, ok := connCm.Data["connections"]
+		if !ok {
+			klog.Infof("conn-balancing get not found peer %s connections.", peerName)
+			continue
+		}
+		unbalancedTimeStr, ok := connCm.Data["unbalancedTime"]
+		if ok {
+			unbalancedTimes, _ = strconv.Atoi(unbalancedTimeStr)
+		} else {
+			unbalancedTimes = 0
+		}
+
+		connCount, err := strconv.Atoi(connCountStr)
+		updateTs, err := strconv.ParseInt(updateTsStr, 10, 64)
+		peersStat[peerName] = ConnStat{
+			PeerName:        peerName,
+			ConnCount:       connCount,
+			UpdateTs:        updateTs,
+			UnbalancedTimes: unbalancedTimes,
+		}
+
+		klog.Infof("conn-balancing get peer %s count:%d  updateTs:%d UnbalancedTimes:%d.", peerName, connCount, updateTs, unbalancedTimes)
+	}
+	if len(peersStat) != len(peerAddrs) {
+		return nil, fmt.Errorf("fail to get peer connection stat")
+	}
+
+	return peersStat, nil
+}
+
+func (mh *MessageHandle) CreateOrUpdateConnectionStat(addr string, connection int, updateTs int64, unbalancedTimes int) error {
+	connStat := make(map[string]string)
+
+	connectionStr := strconv.Itoa(connection)
+	updateTsStr := strconv.FormatInt(updateTs, 10)
+	unbalancedTimeStr := strconv.Itoa(unbalancedTimes)
+
+	connStat["connections"] = connectionStr
+	connStat["updateTime"] = updateTsStr
+	connStat["unbalancedTime"] = unbalancedTimeStr
+
+	connCm := &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "kubeedge",
+			Name:      addr,
+		},
+		Data: connStat,
+	}
+
+	_, err := kubeClient.CoreV1().ConfigMaps("kubeedge").Update(context.TODO(), connCm, metav1.UpdateOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			_, err = kubeClient.CoreV1().ConfigMaps("kubeedge").Create(context.TODO(), connCm, metav1.CreateOptions{})
+			klog.Infof("conn-balancing fail to update local conn-configmap and recreate it %v.", err)
+			return err
+		} else {
+			klog.Infof("conn-balancing fail to get local connection stat from configmap, err: %v.", err)
+		}
+		return err
+	}
+	klog.Infof("conn-balancing update local conn-configmap successfully.")
+	return nil
+}
+
+func getLocalAddress(peers string) string {
+	addrMap := make(map[string]bool)
+	peerAddrs := strings.Split(peers, ",")
+	netInterfaces, err := net.Interfaces()
+	if err != nil {
+		klog.Warningf("net.Interfaces failed, err:", err.Error())
+		return ""
+	}
+	for i := 0; i < len(netInterfaces); i++ {
+		addrs, _ := netInterfaces[i].Addrs()
+		for _, address := range addrs {
+			if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+				if ipnet.IP.To4() != nil {
+					addrMap[ipnet.IP.String()] = true
+				}
+			}
+		}
+	}
+
+	for _, peerAddr := range peerAddrs {
+		if _, ok := addrMap[peerAddr]; ok {
+			return peerAddr
+		}
+	}
+
+	klog.Infof("fail to find local address, cann't start connection balance")
+	return ""
+}
+
+func (mh *MessageHandle) GetlocalConnection() int {
+	localConnection := mh.GetNodeConnectionCount()
+	return localConnection
+}
+
+func (mh *MessageHandle) StartBalancing() {
+	var localAddr string
+
+	startTime := time.Now().Unix()
+	peers := hubconfig.Config.ConnBalance.PeerAddress
+	maxRelease := hubconfig.Config.ConnBalance.MaxReleasePercent
+	maxToleration := hubconfig.Config.ConnBalance.MaxTolerationConnPercent
+	maxTolerationTimes := hubconfig.Config.ConnBalance.MaxTolerationTimes
+
+	if peers == "" {
+		klog.Infof("conn-balancing fail to get peers.")
+		return
+	}
+
+	kubeClient, _ = utils.KubeClient()
+	if kubeClient == nil {
+		klog.Infof("conn-balancing fail to get kube client.")
+		return
+	}
+
+	localAddr = getLocalAddress(peers)
+	if localAddr == "" {
+		klog.Infof("conn-balancing fail to find local address, cann't start connection balance")
+		return
+	}
+
+	klog.Infof("conn-balancing parse config peers:%s, maxRelease:%d, maxToleration:%d, localAddres:%s",
+		peers, maxRelease, maxToleration, localAddr)
+	connCheckTicker := time.NewTicker(time.Duration(mh.KeepaliveInterval) * time.Second)
+	for {
+		<-connCheckTicker.C
+		klog.Infof("conn-balancing timer start")
+		if time.Now().Unix()-startTime < 30 {
+			continue
+		}
+		var localConnection int
+		var needAdjust bool
+		var releaseConnection int
+		var unbalancedTimes int
+		var releaseCount int
+		adjustCount := math.MaxInt32
+
+		localConnection = mh.GetNodeConnectionCount()
+
+		peerStatMap, err := mh.getPeerStat(peers)
+		if err != nil {
+			klog.Warningf("conn-balancing fail to get peer stat.")
+			mh.CreateOrUpdateConnectionStat(localAddr, localConnection, time.Now().Unix(), unbalancedTimes)
+			klog.Infof("conn-balancing end  needAdjust:%t, unbalancedTimes:%d, releaseConnection:%d.",
+				needAdjust, unbalancedTimes, releaseConnection)
+			continue
+		}
+		localStat, ok := peerStatMap[localAddr]
+		if ok {
+			unbalancedTimes = localStat.UnbalancedTimes
+		} else {
+			unbalancedTimes = 0
+		}
+
+		allConnection := localConnection
+		cloudAlive := 1
+		expectConns := 0
+		for peerName, connStat := range peerStatMap {
+			if peerName == localAddr {
+				continue
+			}
+			// the peer connection stat is out of day, ingore it
+			if time.Now().Unix()-connStat.UpdateTs > 120 {
+				continue
+			}
+			allConnection += connStat.ConnCount
+			cloudAlive++
+		}
+
+		klog.Infof("conn-balancing get current node connection:%d-%d alive:%d needAdjust:%t unbalancedTimes:%d adjustCount:%d.",
+			allConnection, localConnection, cloudAlive, needAdjust, unbalancedTimes, adjustCount)
+
+		if cloudAlive <= 0 || cloudAlive != len(peerStatMap) {
+			mh.CreateOrUpdateConnectionStat(localAddr, localConnection, time.Now().Unix(), unbalancedTimes)
+			klog.Infof("conn-balancing end  needAdjust:%t, unbalancedTimes:%d, releaseConnection:%d.",
+				needAdjust, unbalancedTimes, releaseConnection)
+			continue
+		}
+
+		expectConns = (allConnection / cloudAlive)
+		if localConnection-expectConns > (expectConns * int(maxToleration) / 100) {
+			needAdjust = true
+		}
+
+		if needAdjust {
+			unbalancedTimes++
+			if unbalancedTimes < int(maxTolerationTimes) {
+				klog.Infof("conn-balancing unbalanced %d less than maxTolerationTimes %d, skip.",
+					unbalancedTimes, maxTolerationTimes)
+				mh.CreateOrUpdateConnectionStat(localAddr, localConnection, time.Now().Unix(), unbalancedTimes)
+				continue
+			}
+
+			releaseConnection = ((localConnection - expectConns) * int(maxRelease)) / 100
+			klog.Infof("conn-balancing will release %d node connection.", releaseConnection)
+
+			mh.nodeConns.Range(func(nodeName, conn interface{}) bool {
+				if releaseCount >= releaseConnection {
+					return false
+				}
+				conn.(hubio.CloudHubIO).Close()
+				mh.nodeConns.Delete(nodeName)
+				releaseCount++
+				klog.Infof("conn-balancing release node %s connection.", nodeName)
+				return true
+			})
+
+			unbalancedTimes = 0
+
+			klog.Infof("conn-balancing will go into observed window.")
+		} else {
+			unbalancedTimes = 0
+		}
+		mh.CreateOrUpdateConnectionStat(localAddr, mh.GetNodeConnectionCount(), time.Now().Unix(), unbalancedTimes)
+		klog.Infof("conn-balancing end  needAdjust:%t, unbalancedTimes:%d, releaseConnection:%d.",
+			needAdjust, unbalancedTimes, releaseConnection)
 	}
 }
 
@@ -371,6 +626,17 @@ func (mh *MessageHandle) UnregisterNode(info *model.HubInfo, code ExitCode) {
 	if code == nodeStop {
 		mh.MessageQueue.Close(info)
 	}
+}
+
+// GetNodeCount returns the number of connected Nodes
+func (mh *MessageHandle) GetNodeConnectionCount() int {
+	var num int
+	iter := func(key, value interface{}) bool {
+		num++
+		return true
+	}
+	mh.nodeConns.Range(iter)
+	return num
 }
 
 // ListMessageWriteLoop processes all list type resource write requests

@@ -61,6 +61,13 @@ func startWebsocketServer() {
 		Addr:       fmt.Sprintf("%s:%d", hubconfig.Config.WebSocket.Address, hubconfig.Config.WebSocket.Port),
 		ExOpts:     api.WSServerOption{Path: "/"},
 	}
+
+	if hubconfig.Config.ConnBalance != nil {
+		if hubconfig.Config.ConnBalance.Enable {
+			go handler.CloudhubHandler.StartBalancing()
+		}
+	}
+
 	klog.Infof("Starting cloudhub %s server", api.ProtocolTypeWS)
 	klog.Exit(svc.ListenAndServeTLS("", ""))
 }

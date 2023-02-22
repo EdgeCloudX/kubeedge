@@ -349,11 +349,11 @@ func (dc *DownstreamController) Start() error {
 	// nodes
 	go dc.syncEdgeNodes()
 
-	// rule
-	go dc.syncRule()
-
-	// ruleendpoint
-	go dc.syncRuleEndpoint()
+	//// rule
+	//go dc.syncRule()
+	//
+	//// ruleendpoint
+	//go dc.syncRuleEndpoint()
 
 	return nil
 }

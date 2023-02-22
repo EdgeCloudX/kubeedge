@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"github.com/kubeedge/kubeedge/cloud/pkg/metrics"
 	"sort"
 	"time"
 
@@ -118,6 +119,19 @@ type UpstreamController struct {
 	serviceLister   corelisters.ServiceLister
 	endpointLister  corelisters.EndpointsLister
 	nodeLister      corelisters.NodeLister
+}
+
+var collector metrics.CollectResources
+
+func (uc *UpstreamController) CollectUpAndDownMessage() metrics.CollectResources {
+	collector.NodeStatus.ChanLen = len(uc.nodeStatusChan)
+	collector.PodStatus.ChanLen = len(uc.podStatusChan)
+	collector.ConfigMap.ChanLen = len(uc.configMapChan)
+	collector.Secret.ChanLen = len(uc.secretChan)
+	collector.QueryNode.ChanLen = len(uc.queryNodeChan)
+	collector.UpdateNode.ChanLen = len(uc.updateNodeChan)
+	collector.PodDelete.ChanLen = len(uc.podDeleteChan)
+	return collector
 }
 
 // Start UpstreamController

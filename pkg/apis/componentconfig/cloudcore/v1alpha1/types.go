@@ -86,6 +86,18 @@ type Modules struct {
 	Router *Router `json:"router,omitempty"`
 	// IptablesManager indicates iptables module config
 	IptablesManager *IptablesManager `json:"iptablesManager,omitempty"`
+	// Router indicates router module config
+	Metrics *Metrics `json:"metrics,omitempty"`
+}
+
+type Metrics struct {
+	// Enable indicates whether Metrics is enabled, if set to false (for debugging etc.),
+	// skip checking other Metrics configs.
+	// default true
+	Enable bool `json:"enable"`
+	// Port set open port for quic server
+	// default 10082
+	Port uint32 `json:"port,omitempty"`
 }
 
 // CloudHub indicates the config of CloudHub module.
@@ -137,6 +149,9 @@ type CloudHub struct {
 	// TokenRefreshDuration indicates the interval of cloudcore token refresh, unit is hour
 	// default 12h
 	TokenRefreshDuration time.Duration `json:"tokenRefreshDuration,omitempty"`
+
+	// connection balance with cloudcore peers
+	ConnBalance *CloudHubConnBalance `json:"connBalance,omitempty"`
 }
 
 // CloudHubQUIC indicates the quic server config
@@ -432,4 +447,20 @@ type IptablesManager struct {
 	// default internal.
 	// +kubebuilder:validation:Enum=internal;external
 	Mode IptablesMgrMode `json:"mode,omitempty"`
+}
+
+// CloudHubConnBalance indicates for make cloudcore connection  balance with other cloudcore replicas
+type CloudHubConnBalance struct {
+	// Enable indicates whether CloudHubConnBalance is enabled,
+	// if set to false (for debugging etc.), skip checking other CloudHubConnBalance configs.
+	// default false
+	Enable bool `json:"enable,omitempty"`
+	// Context indicates the real server address of  cloudcore binded
+	PeerAddress string `json:"peerAddress,omitempty"`
+	// Buffer indicates  max release connection  percent of all connection
+	MaxReleasePercent uint32 `json:"maxReleasePercent,omitempty"`
+	// Buffer indicates max toleration connection percent with other peer
+	MaxTolerationConnPercent uint32 `json:"maxTolerationConnPercent,omitempty"`
+	// Buffer indicates max toleration connection percent with other peer
+	MaxTolerationTimes uint32 `json:"maxTolerationTimes,omitempty"`
 }

@@ -4,8 +4,14 @@ ARG GO_LDFLAGS
 
 COPY . /go/src/github.com/kubeedge/kubeedge
 
+ENV GOPROXY=https://goproxy.cn
+WORKDIR /go/src/github.com/kubeedge/kubeedge
+RUN export GO111MODULE=on \
+    &&  go mod tidy \
+    &&  go mod vendor
+
 RUN CGO_ENABLED=0 GO111MODULE=off go build -v -o /usr/local/bin/cloudcore -ldflags "$GO_LDFLAGS -w -s" \
-    github.com/kubeedge/kubeedge/cloud/cmd/cloudcore
+    ./cloud/cmd/cloudcore
 
 
 FROM alpine:3.13

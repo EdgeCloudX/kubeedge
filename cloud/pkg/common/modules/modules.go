@@ -27,4 +27,5 @@ const (
 	TunnelPort string = "tunnelport"
 
 	TunnelPortRecordAnnotationKey string = "tunnelportrecord.kubeedge.io"
+	CloudCoreMetricModuleName            = "cloudcoreMetric"
 )

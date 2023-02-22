@@ -1,7 +1,12 @@
 package edgecontroller
 
 import (
+	beehiveContext "github.com/kubeedge/beehive/pkg/core/context"
+	"github.com/kubeedge/beehive/pkg/core/model"
+	"github.com/kubeedge/kubeedge/cloud/pkg/metrics"
 	"k8s.io/klog/v2"
+	"reflect"
+	"time"
 
 	"github.com/kubeedge/beehive/pkg/core"
 	"github.com/kubeedge/kubeedge/cloud/pkg/common/informers"
@@ -56,6 +61,28 @@ func (ec *EdgeController) Enable() bool {
 	return ec.config.Enable
 }
 
+func (uc *EdgeController) SendCollectMessage(upstream *controller.UpstreamController) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-beehiveContext.Done():
+			klog.Info("stop send collect message")
+			return
+		case <-ticker.C:
+			collertData := upstream.CollectUpAndDownMessage()
+			var msg model.Message
+			msg.Content = collertData
+
+			if v, ok := msg.Content.(metrics.CollectResources); !ok {
+				typeOfA := reflect.TypeOf(v)
+				klog.Info("send messaga error ,the message type is ", typeOfA.Kind())
+			}
+			beehiveContext.Send(modules.CloudCoreMetricModuleName, msg)
+		}
+	}
+}
+
 // Start controller
 func (ec *EdgeController) Start() {
 	if err := ec.upstream.Start(); err != nil {
@@ -65,4 +92,6 @@ func (ec *EdgeController) Start() {
 	if err := ec.downstream.Start(); err != nil {
 		klog.Exitf("start downstream failed with error: %s", err)
 	}
+
+	go ec.SendCollectMessage(ec.upstream)
 }
