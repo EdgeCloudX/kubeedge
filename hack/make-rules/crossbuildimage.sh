@@ -89,9 +89,6 @@ function build_multi_arch_images() {
     # https://github.com/docker/buildx/issues/495
     # https://github.com/multiarch/qemu-user-static/issues/100
     # docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-    if [[ ${IMAGE_TAG} != "v1.10.4" ]];then
-      IMAGE_TAG="v1.10.4"
-    fi
     docker buildx build --build-arg GO_LDFLAGS="${GO_LDFLAGS}" -t ${IMAGE_REPO_NAME}/${IMAGE_NAME}:${IMAGE_TAG} -f ${DOCKERFILE_PATH} --platform linux/amd64,linux/arm64,linux/arm/v7 --push .
     set +x
   done
