@@ -27,6 +27,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	kubetypes "k8s.io/kubernetes/pkg/kubelet/types"
 	"net"
 	"net/http"
 	"os"
@@ -290,7 +291,7 @@ func (e *edged) Group() string {
 	return modules.EdgedGroup
 }
 
-//Enable indicates whether this module is enabled
+// Enable indicates whether this module is enabled
 func (e *edged) Enable() bool {
 	return e.enable
 }
@@ -429,7 +430,7 @@ func (e *edged) cgroupRoots() []string {
 	return cgroupRoots
 }
 
-//newEdged creates new edged object and initialises it
+// newEdged creates new edged object and initialises it
 func newEdged(enable bool) (*edged, error) {
 	// skip init edged if disabled
 	if !enable {
@@ -543,13 +544,16 @@ func newEdged(enable bool) (*edged, error) {
 		return nil, err
 	}
 
-	// create a log manager
-	logManager, err := logs.NewContainerLogManager(runtimeService, ed.os, "10Mi", 5)
-	if err != nil {
-		return nil, fmt.Errorf("new container log manager failed, err: %s", err.Error())
+	if ed.containerRuntimeName == kubetypes.RemoteContainerRuntime {
+		// create a log manager
+		logManager, err := logs.NewContainerLogManager(runtimeService, ed.os, "10Mi", 5)
+		if err != nil {
+			return nil, fmt.Errorf("new container log manager failed, err: %s", err.Error())
+		}
+		ed.logManager = logManager
+	} else {
+		ed.logManager = logs.NewStubContainerLogManager()
 	}
-
-	ed.logManager = logManager
 
 	containerRuntime, err := kuberuntime.NewKubeGenericRuntimeManager(
 		recorder,
@@ -1422,8 +1426,8 @@ func (e *edged) getImagePullSecretsForPod(pod *v1.Pod) []v1.Secret {
 }
 
 // Get pods which should be resynchronized. Currently, the following pod should be resynchronized:
-//   * pod whose work is ready.
-//   * internal modules that request sync of a pod.
+//   - pod whose work is ready.
+//   - internal modules that request sync of a pod.
 func (e *edged) getPodsToSync() []*v1.Pod {
 	allPods := e.podManager.GetPods()
 	podUIDs := e.workQueue.GetWork()
